@@ -59,6 +59,9 @@ internal sealed class ITv2Session : IITv2Session
     private EncryptionHandler? _encryption;
     private ConnectionSettings? _connectionSettings;
 
+    // Logging scope — set once SessionId is known, covers the rest of the session lifetime
+    private IDisposable? _sessionScope;
+
     // Reconnection queue flush
     private readonly TaskCompletionSource _queueFlushed = new();
     private Timer? _flushTimer;
@@ -108,7 +111,7 @@ internal sealed class ITv2Session : IITv2Session
         if (handshakeResult.IsFailure)
             return Result<ITv2Session>.Fail(handshakeResult.Error!.Value);
 
-        session._logger.LogInformation("Session {SessionId} connected successfully", session.SessionId);
+        session._logger.LogInformation("Session connected successfully");
 
         _ = session.ReceivePumpAsync();
         _ = session.HeartbeatLoopAsync();
@@ -158,7 +161,8 @@ internal sealed class ITv2Session : IITv2Session
         var initialPacket = await ReceivePacketAsync(ct);
 
         SessionId = System.Text.Encoding.UTF8.GetString(_transport.DefaultHeader.Span);
-        _logger.LogInformation("Connection from Integration Identification Number [851][422]: {SessionId}", SessionId);
+        _sessionScope = _logger.BeginScope(ITv2ConnectionHandler.CreateLogScope(SessionId));
+        _logger.LogInformation("Connection from Integration Identification Number [851][422]");
         OpenSession openSession = initialPacket.Message.As<OpenSession>();
 
         // Resolve per-connection settings now that we know the session ID and encryption type
@@ -235,7 +239,6 @@ internal sealed class ITv2Session : IITv2Session
 
     private async Task ReceivePumpAsync()
     {
-        using var scope = _logger.BeginScope(ITv2ConnectionHandler.CreateLogScope(SessionId));
         var ct = _shutdownCts.Token;
         try
         {
@@ -505,7 +508,6 @@ internal sealed class ITv2Session : IITv2Session
 
     private async Task HeartbeatLoopAsync()
     {
-        using var scope = _logger.BeginScope(ITv2ConnectionHandler.CreateLogScope(SessionId));
         var ct = _shutdownCts.Token;
         try
         {
@@ -545,6 +547,7 @@ internal sealed class ITv2Session : IITv2Session
         _sendLock.Dispose();
         _shutdownCts.Dispose();
         _encryption?.Dispose();
+        _sessionScope?.Dispose();
 
         await _transport.DisposeAsync();
     }
