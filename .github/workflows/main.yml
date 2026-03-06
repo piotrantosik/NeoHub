@@ -1,8 +1,8 @@
-name: Build and Publish Docker Image
+name: Test Build and Publish Docker Image
 
 on:
-#  push:
-#    branches: [ master, main ]
+  #  push:
+  #    branches: [ master, main ]
   workflow_dispatch:
 
 env:
@@ -34,13 +34,13 @@ jobs:
           registry: ${{ env.REGISTRY_GHCR }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-#
-#      # 2. Login to Docker Hub (Add your secrets first!)
-#      - name: Log in to Docker Hub
-#        uses: docker/login-action@v3
-#        with:
-#          username: ${{ secrets.DOCKERHUB_USERNAME }}
-#          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      #
+      #      # 2. Login to Docker Hub (Add your secrets first!)
+      #      - name: Log in to Docker Hub
+      #        uses: docker/login-action@v3
+      #        with:
+      #          username: ${{ secrets.DOCKERHUB_USERNAME }}
+      #          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # 3. Extract metadata for BOTH registries
       - name: Extract metadata (tags, labels)
