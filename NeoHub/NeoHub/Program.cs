@@ -52,6 +52,9 @@ namespace NeoHub
             // before they ever reach the provider.
             builder.Logging.AddFilter<DiagnosticsLoggerProvider>(null, LogLevel.Trace);
 
+            // HttpContextAccessor for Home Assistant ingress path base
+            builder.Services.AddHttpContextAccessor();
+
             // Add Blazor services
             builder.Services.AddRazorComponents()
                 .AddInteractiveServerComponents();
@@ -103,13 +106,23 @@ namespace NeoHub
 
             app.UseWebSockets();
 
+            // HA ingress support: set PathBase from X-Ingress-Path header
+            app.Use(async (context, next) =>
+            {
+                var ingressPath = context.Request.Headers["X-Ingress-Path"].FirstOrDefault();
+                if (!string.IsNullOrEmpty(ingressPath))
+                {
+                    context.Request.PathBase = ingressPath;
+                }
+                await next();
+            });
+
             if (!app.Environment.IsDevelopment())
             {
                 app.UseExceptionHandler("/Error");
                 app.UseHsts();
             }
 
-            app.UseHttpsRedirection();
             app.UseStaticFiles();
             app.UseAntiforgery();
 
