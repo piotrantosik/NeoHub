@@ -18,10 +18,10 @@ namespace NeoHub
             // Migrate legacy settings format if needed (safe to remove once all deployments are migrated)
             SettingsMigration.MigrateIfNeeded(builder.Environment.ContentRootPath);
 
-            // Load user settings from persist folder (overrides appsettings.json)
-            // AddJsonFile resolves relative paths from ContentRootPath
+            // Load user settings from persist folder (overrides appsettings.json).
+            // Path respects NEOHUB_PERSIST_PATH env var (used by HA addon to point to addon_config).
             builder.Configuration.AddJsonFile(
-                SettingsPersistenceService.SettingsFileRelativePath,
+                SettingsPersistenceService.GetSettingsFilePath(builder.Environment.ContentRootPath),
                 optional: true, 
                 reloadOnChange: true);
 
