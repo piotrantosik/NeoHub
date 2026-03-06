@@ -63,6 +63,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
           build-args: |
             GITHUB_SHA=${{ github.sha }}
             GITHUB_RUN_NUMBER=${{ github.run_number }}
