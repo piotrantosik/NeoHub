@@ -1,5 +1,5 @@
 services:
-  NeoHub:
+  neohub:
     image: "ghcr.io/brianhumlicek/neohub:latest"
     container_name: NeoHub
     ports:

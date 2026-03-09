@@ -1,9 +1,9 @@
 services:
-  NeoHub:
+  neohub:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: NeoHub
+    container_name: NeoHub_local
     ports:
       - "5181:8080"     # HTTP Web UI
       - "7013:8443"     # HTTPS Web UI
