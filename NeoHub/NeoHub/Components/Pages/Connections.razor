@@ -19,19 +19,10 @@
 <PageTitle>Connections</PageTitle>
 
 <MudContainer MaxWidth="MaxWidth.Large" Class="mt-4">
-    <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-2">
-        <MudText Typo="Typo.h4">
-            <MudIcon Icon="@Icons.Material.Filled.Cable" Class="mr-2" Style="vertical-align: middle;" />
-            Connections
-        </MudText>
-        <MudSpacer />
-        <MudButton Variant="Variant.Filled"
-                   Color="Color.Primary"
-                   StartIcon="@Icons.Material.Filled.Add"
-                   OnClick="AddConnection">
-            Add Connection
-        </MudButton>
-    </MudStack>
+    <MudText Typo="Typo.h4" GutterBottom="true">
+        <MudIcon Icon="@Icons.Material.Filled.Cable" Class="mr-2" Style="vertical-align: middle;" />
+        Connections
+    </MudText>
 
     @if (!connections.Any())
     {
@@ -47,13 +38,14 @@
                 var isConnected = activeSessions.Contains(conn.SessionId);
                 var session = isConnected ? PanelState.GetSession(conn.SessionId) : null;
                 var status = GetConnectionStatus(conn, isConnected);
+                var isInitializing = isConnected && session?.ConnectionPhase is not ConnectionPhase.Connected and not ConnectionPhase.Disconnected;
 
                 <MudCard Elevation="2" Outlined="true">
                     <MudCardHeader>
                         <CardHeaderAvatar>
-                            <MudAvatar Color="@status.Color" Size="Size.Small">
-                                <MudIcon Icon="@status.Icon" Size="Size.Small" />
-                            </MudAvatar>
+                            <PhaseIndicator IsAnimated="@isInitializing"
+                                            Color="@status.Color"
+                                            Icon="@status.Icon" />
                         </CardHeaderAvatar>
                         <CardHeaderContent>
                             <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
@@ -87,30 +79,22 @@
                             <MudText Typo="Typo.subtitle2" Class="mb-2">Connection Settings</MudText>
                             <MudGrid Spacing="2">
                                 <MudItem xs="12" sm="6">
-                                    @{ var isNewConnection = string.IsNullOrEmpty(conn.SessionId); }
                                     <MudTextField T="string"
                                                   Label="Session ID"
                                                   Value="@conn.SessionId"
-                                                  ValueChanged="@(v => conn.SessionId = v ?? "")"
-                                                  ReadOnly="@(!isNewConnection)"
+                                                  ReadOnly="true"
                                                   HelperText="Integration Identification Number [851][422]"
                                                   Variant="Variant.Outlined"
                                                   Margin="Margin.Dense" />
                                 </MudItem>
                                 <MudItem xs="12" sm="6">
-                                    <MudSelect T="DSC.TLink.ITv2.Enumerations.EncryptionType"
-                                               Label="Encryption Type"
-                                               @bind-Value="conn.EncryptionType"
-                                               HelperText="Encryption type negotiated by the panel during handshake"
-                                               Variant="Variant.Outlined"
-                                               Margin="Margin.Dense">
-                                        <MudSelectItem T="DSC.TLink.ITv2.Enumerations.EncryptionType"
-                                                       Value="DSC.TLink.ITv2.Enumerations.EncryptionType.Unknown">Unknown</MudSelectItem>
-                                        <MudSelectItem T="DSC.TLink.ITv2.Enumerations.EncryptionType"
-                                                       Value="DSC.TLink.ITv2.Enumerations.EncryptionType.Type1">Type 1</MudSelectItem>
-                                        <MudSelectItem T="DSC.TLink.ITv2.Enumerations.EncryptionType"
-                                                       Value="DSC.TLink.ITv2.Enumerations.EncryptionType.Type2">Type 2</MudSelectItem>
-                                    </MudSelect>
+                                    <MudTextField T="string"
+                                                  Label="Encryption Type"
+                                                  Value="@conn.EncryptionType.ToString()"
+                                                  ReadOnly="true"
+                                                  HelperText="Encryption type negotiated by the panel during handshake"
+                                                  Variant="Variant.Outlined"
+                                                  Margin="Margin.Dense" />
                                 </MudItem>
                                 <MudItem xs="12" sm="6">
                                     @{ var showType1 = visibleFields.Contains($"{conn.SessionId}:Type1"); }
@@ -148,6 +132,36 @@
                                                      HelperText="Limit how many zones to pull (0 = use panel max)"
                                                      Variant="Variant.Outlined"
                                                      Margin="Margin.Dense" />
+                                </MudItem>
+                                <MudItem xs="12" sm="6">
+                                    <MudTextField T="string"
+                                                  Label="Default Access Code"
+                                                  Value="@(conn.DefaultAccessCode ?? "")"
+                                                  ValueChanged="@(v => conn.DefaultAccessCode = string.IsNullOrWhiteSpace(v) ? null : v)"
+                                                  HelperText="Access code for arm/disarm/bypass (factory default: 1234)"
+                                                  Variant="Variant.Outlined"
+                                                  Margin="Margin.Dense"
+                                                  InputType="InputType.Password" />
+                                </MudItem>
+                                <MudItem xs="12" sm="6">
+                                    <MudTextField T="string"
+                                                  Label="Installer Code"
+                                                  Value="@(conn.InstallerCode ?? "")"
+                                                  ValueChanged="@(v => conn.InstallerCode = string.IsNullOrWhiteSpace(v) ? null : v)"
+                                                  HelperText="Installer code for config access (factory default: 5555)"
+                                                  Variant="Variant.Outlined"
+                                                  Margin="Margin.Dense"
+                                                  InputType="InputType.Password" />
+                                </MudItem>
+                                <MudItem xs="12" sm="6">
+                                    <MudTextField T="string"
+                                                  Label="Master Code"
+                                                  Value="@(conn.MasterCode ?? "")"
+                                                  ValueChanged="@(v => conn.MasterCode = string.IsNullOrWhiteSpace(v) ? null : v)"
+                                                  HelperText="Master code for user management (factory default: 1234)"
+                                                  Variant="Variant.Outlined"
+                                                  Margin="Margin.Dense"
+                                                  InputType="InputType.Password" />
                                 </MudItem>
                             </MudGrid>
                             <MudStack Row="true" Spacing="2" Class="mt-3">
@@ -223,6 +237,9 @@
 </MudContainer>
 
 @code {
+    [SupplyParameterFromQuery(Name = "expand")]
+    public string? ExpandSessionId { get; set; }
+
     private List<ConnectionSettings> connections = new();
     private HashSet<string> activeSessions = new();
     private HashSet<string> visibleFields = new();
@@ -230,11 +247,15 @@
     private string? expandedLogs;
     private bool saving;
     private Timer? _refreshTimer;
+    private bool _disposed;
 
     protected override void OnInitialized()
     {
         RefreshData();
+        if (!string.IsNullOrEmpty(ExpandSessionId))
+            expandedSettings = ExpandSessionId;
         SessionMonitor.SessionsChanged += OnSessionsChanged;
+        PanelState.SessionStateChanged += OnStateChanged;
         UpdateRefreshTimer();
     }
 
@@ -248,16 +269,40 @@
     {
         InvokeAsync(() =>
         {
-            RefreshData();
-            UpdateRefreshTimer();
-            StateHasChanged();
+            if (_disposed) return;
+            try
+            {
+                RefreshData();
+                UpdateRefreshTimer();
+                StateHasChanged();
+            }
+            catch (ObjectDisposedException) { }
+        });
+    }
+
+    private void OnStateChanged(object? sender, EventArgs e)
+    {
+        InvokeAsync(() =>
+        {
+            if (_disposed) return;
+            try
+            {
+                RefreshData();
+                StateHasChanged();
+            }
+            catch (ObjectDisposedException) { }
         });
     }
 
     private void UpdateRefreshTimer()
     {
         if (activeSessions.Any())
-            _refreshTimer ??= new Timer(_ => InvokeAsync(StateHasChanged), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            _refreshTimer ??= new Timer(_ => InvokeAsync(() =>
+            {
+                if (_disposed) return;
+                try { StateHasChanged(); }
+                catch (ObjectDisposedException) { }
+            }), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         else
         {
             _refreshTimer?.Dispose();
@@ -281,15 +326,6 @@
     {
         if (!visibleFields.Remove(fieldKey))
             visibleFields.Add(fieldKey);
-    }
-
-    private void AddConnection()
-    {
-        var conn = new ConnectionSettings();
-        ConnectionSettings.CurrentValue.Connections.Add(conn);
-        RefreshData();
-        expandedSettings = conn.SessionId;
-        expandedLogs = null;
     }
 
     private async Task DeleteConnection(ConnectionSettings conn)
@@ -344,13 +380,22 @@
 
     private (Color Color, string Icon, string Label) GetConnectionStatus(ConnectionSettings conn, bool isConnected)
     {
-        if (isConnected)
-            return (Color.Success, Icons.Material.Filled.CheckCircle, "Connected");
+        if (!isConnected)
+        {
+            if (!conn.IsComplete)
+                return (Color.Warning, Icons.Material.Filled.Warning, "Needs Configuration");
+            return (Color.Default, Icons.Material.Filled.LinkOff, "Disconnected");
+        }
 
-        if (!conn.IsComplete)
-            return (Color.Warning, Icons.Material.Filled.Warning, "Needs Configuration");
-
-        return (Color.Default, Icons.Material.Filled.LinkOff, "Disconnected");
+        var session = PanelState.GetSession(conn.SessionId);
+        return session?.ConnectionPhase switch
+        {
+            ConnectionPhase.Handshake => (Color.Info, Icons.Material.Filled.Handshake, "Handshake"),
+            ConnectionPhase.ReadingConfig => (Color.Info, Icons.Material.Filled.Settings, "Reading Config"),
+            ConnectionPhase.ReadingStatus => (Color.Info, Icons.Material.Filled.Sync, "Reading Status"),
+            ConnectionPhase.Connected => (Color.Success, Icons.Material.Filled.CheckCircle, "Connected"),
+            _ => (Color.Warning, Icons.Material.Filled.HourglassEmpty, "Connecting"),
+        };
     }
 
     private string GetConnectionSummary(ConnectionSettings conn, SessionState? session)
@@ -408,7 +453,9 @@
 
     public void Dispose()
     {
+        _disposed = true;
         _refreshTimer?.Dispose();
         SessionMonitor.SessionsChanged -= OnSessionsChanged;
+        PanelState.SessionStateChanged -= OnStateChanged;
     }
 }

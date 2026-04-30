@@ -12,7 +12,6 @@
 @inject ISessionMonitor SessionMonitor
 @inject NavigationManager Navigation
 @inject ISnackbar Snackbar
-@inject IOptionsMonitor<ApplicationSettings> Settings
 @inject IOptionsMonitor<PanelConnectionsSettings> ConnectionSettings
 @implements IDisposable
 
@@ -36,11 +35,19 @@
 
             <MudPaper Elevation="2" Class="pa-4 mb-4" Outlined="@(!isConnected)">
                 @* ── Connection header ── *@
+                @{
+                    var phase = session?.ConnectionPhase ?? ConnectionPhase.Disconnected;
+                    var phaseInfo = GetPhaseInfo(phase, isConnected);
+                }
                 <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-3">
-                    <MudIcon Icon="@(isConnected ? Icons.Material.Filled.CheckCircle : Icons.Material.Filled.LinkOff)"
-                             Color="@(isConnected ? Color.Success : Color.Default)"
-                             Size="Size.Small" />
+                    <PhaseIndicator IsAnimated="@phaseInfo.IsAnimated"
+                                    Color="@phaseInfo.Color"
+                                    Icon="@phaseInfo.Icon" />
                     <MudText Typo="Typo.h6">@sessionId</MudText>
+                    <MudChip T="string" Size="Size.Small" Color="@phaseInfo.Color"
+                             Variant="@(phaseInfo.IsAnimated ? Variant.Filled : Variant.Outlined)">
+                        @phaseInfo.Label
+                    </MudChip>
                     @if (isConnected && session?.PanelDateTimeNow is DateTime panelTime)
                     {
                         <MudText Typo="Typo.caption" Color="Color.Secondary">
@@ -54,7 +61,7 @@
                 {
                     <MudText Typo="Typo.body2" Color="Color.Secondary">
                         Panel is not connected.
-                        <MudLink Href="connections">Manage connection →</MudLink>
+                        <MudLink Href="@($"connections?expand={Uri.EscapeDataString(sessionId)}")" >Manage connection →</MudLink>
                     </MudText>
                 }
                 else if (session == null)
@@ -89,7 +96,9 @@
                         <MudCard Elevation="1" Class="mb-3">
                             <MudCardHeader>
                                 <CardHeaderContent>
-                                    <MudText Typo="Typo.h6">@partition.DisplayName</MudText>
+                                    <MudLink Typo="Typo.h6" Href="@($"zones/{sessionId}/{partitionNumber}")" Underline="Underline.Hover" Color="Color.Inherit">
+                                        @partition.DisplayName
+                                    </MudLink>
                                 </CardHeaderContent>
                                 <CardHeaderActions>
                                     <MudChip T="string"
@@ -197,10 +206,10 @@
                       Immediate="true"
                       Variant="Variant.Outlined"
                       ReadOnly="true"
-                      Class="mt-2 mb-4"
-                      HelperText="@(string.IsNullOrEmpty(Settings.CurrentValue.DefaultAccessCode) ? "" : "Leave empty to use default code")" />
+                                     Class="mt-2 mb-4"
+                                     HelperText="@(HasDefaultAccessCode(disarmSessionId) ? "Leave empty to use default code" : "")" />
 
-        <MudGrid Spacing="2">
+                      <MudGrid Spacing="2">
             @for (int i = 1; i <= 9; i++)
             {
                 var digit = i;
@@ -268,6 +277,9 @@
 	private bool showDisarmDialog;
 	private Timer? _clockTimer;
 
+	private bool _disposed;
+	private bool _renderDirty;
+
 	protected override void OnInitialized()
 	{
 		RefreshSessions();
@@ -276,21 +288,26 @@
 		PanelState.PartitionStateChanged += OnStateChanged;
 		PanelState.ZoneStateChanged += OnStateChanged;
 
-		_clockTimer = new Timer(_ => InvokeAsync(StateHasChanged), null, TimeSpan.Zero, TimeSpan.FromSeconds(1));
+		_clockTimer = new Timer(_ => InvokeAsync(() =>
+		{
+			if (_disposed) return;
+			try
+			{
+				if (_renderDirty) { RefreshSessions(); _renderDirty = false; }
+				StateHasChanged();
+			}
+			catch (ObjectDisposedException) { }
+		}), null, TimeSpan.Zero, TimeSpan.FromSeconds(1));
 	}
 
 	private void OnSessionsChanged()
 	{
-		InvokeAsync(() =>
-		{
-			RefreshSessions();
-			StateHasChanged();
-		});
+		_renderDirty = true;
 	}
 
 	private void OnStateChanged(object? sender, EventArgs e)
 	{
-		InvokeAsync(StateHasChanged);
+		_renderDirty = true;
 	}
 
 	private void RefreshSessions()
@@ -376,6 +393,21 @@
 		_ => Color.Warning
 	};
 
+	private static (Color Color, string Icon, string Label, bool IsAnimated) GetPhaseInfo(ConnectionPhase phase, bool isConnected)
+	{
+		if (!isConnected)
+			return (Color.Default, Icons.Material.Filled.LinkOff, "Disconnected", false);
+
+		return phase switch
+		{
+			ConnectionPhase.Handshake => (Color.Info, Icons.Material.Filled.Handshake, "Handshake", true),
+			ConnectionPhase.ReadingConfig => (Color.Info, Icons.Material.Filled.Settings, "Reading Config", true),
+			ConnectionPhase.ReadingStatus => (Color.Info, Icons.Material.Filled.Sync, "Reading Status", true),
+			ConnectionPhase.Connected => (Color.Success, Icons.Material.Filled.CheckCircle, "Connected", false),
+			_ => (Color.Warning, Icons.Material.Filled.HourglassEmpty, "Connecting", true),
+		};
+	}
+
 	private async Task ArmPartitionAsync(string sessionId, byte partition, ArmingMode mode)
 	{
 		commandInProgress = true;
@@ -445,10 +477,15 @@
 
 	public void Dispose()
 	{
+		_disposed = true;
 		_clockTimer?.Dispose();
 		SessionMonitor.SessionsChanged -= OnSessionsChanged;
 		PanelState.SessionStateChanged -= OnStateChanged;
 		PanelState.PartitionStateChanged -= OnStateChanged;
 		PanelState.ZoneStateChanged -= OnStateChanged;
 	}
+
+	private bool HasDefaultAccessCode(string? sessionId) =>
+		!string.IsNullOrEmpty(sessionId) &&
+		!string.IsNullOrEmpty(ConnectionSettings.CurrentValue.FindBySessionId(sessionId)?.DefaultAccessCode);
 }

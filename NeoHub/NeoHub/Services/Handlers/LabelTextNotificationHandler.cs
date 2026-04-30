@@ -1,3 +1,4 @@
+using DSC.TLink.ITv2.Enumerations;
 using DSC.TLink.ITv2.MediatR;
 using DSC.TLink.ITv2.Messages;
 using MediatR;
@@ -7,15 +8,11 @@ namespace NeoHub.Services.Handlers
 {
     /// <summary>
     /// Handles label text notifications — both solicited (responses to our requests)
-    /// and unsolicited (panel-initiated updates). Updates zone or partition names
-    /// based on the label type byte.
+    /// and unsolicited (panel-initiated updates). Updates zone, partition, or user names.
     /// </summary>
     public class LabelTextNotificationHandler
         : INotificationHandler<SessionNotification<NotificationLabelText>>
     {
-        private const int ZoneLabelType = 0xD1;
-        private const int PartitionLabelType = 0xD3;
-
         private readonly IPanelStateService _service;
         private readonly ILogger<LabelTextNotificationHandler> _logger;
 
@@ -34,18 +31,21 @@ namespace NeoHub.Services.Handlers
             var msg = notification.MessageData;
             var sessionId = notification.SessionId;
 
-            switch (msg.Unknown)
+            switch (msg.Collection)
             {
-                case ZoneLabelType:
+                case NotificationLabelText.LabelCollection.Zone:
                     ApplyZoneLabels(sessionId, msg);
                     break;
-                case PartitionLabelType:
+                case NotificationLabelText.LabelCollection.Partition:
                     ApplyPartitionLabels(sessionId, msg);
+                    break;
+                case NotificationLabelText.LabelCollection.User:
+                    ApplyUserLabels(sessionId, msg);
                     break;
                 default:
                     _logger.LogWarning(
                         "Unknown label type 0x{Type:X2} for session {SessionId}, Start={Start} End={End}",
-                        msg.Unknown, sessionId, msg.Start, msg.End);
+                        msg.Collection, sessionId, msg.Start, msg.End);
                     break;
             }
 
@@ -93,6 +93,36 @@ namespace NeoHub.Services.Handlers
 
             _logger.LogDebug(
                 "Applied {Count} partition labels (Start={Start}) for session {SessionId}",
+                applied, msg.Start, sessionId);
+        }
+
+        /// <summary>
+        /// Applies user labels from NotificationLabelText.
+        /// </summary>
+        private void ApplyUserLabels(string sessionId, NotificationLabelText msg)
+        {
+            var session = _service.GetSession(sessionId);
+            if (session == null)
+            {
+                _logger.LogDebug("No session {SessionId} for user labels", sessionId);
+                return;
+            }
+
+            int applied = 0;
+            for (int i = 0; i < msg.Labels.Length; i++)
+            {
+                int userIndex = msg.Start + i;
+                var label = msg.Labels[i]?.Trim();
+
+                if (session.UserList.Users.TryGetValue(userIndex, out var state))
+                {
+                    state.UserLabel = string.IsNullOrEmpty(label) ? null : label;
+                    applied++;
+                }
+            }
+
+            _logger.LogDebug(
+                "Applied {Count} user labels (Start={Start}) for session {SessionId}",
                 applied, msg.Start, sessionId);
         }
     }

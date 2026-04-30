@@ -1,3 +1,5 @@
+using NeoHub.Services.PanelConfiguration;
+
 namespace NeoHub.Services.Models
 {
     /// <summary>
@@ -7,10 +9,41 @@ namespace NeoHub.Services.Models
     {
         public required string SessionId { get; init; }
         public string Name => SessionId; // TODO: Allow friendly names
+        public ConnectionPhase ConnectionPhase { get; set; }
         public int MaxZones { get; set; }
         public int MaxPartitions { get; set; }
+        public int MaxUsers { get; set; }
         public Dictionary<byte, PartitionState> Partitions { get; } = new();
         public Dictionary<byte, ZoneState> Zones { get; } = new();
+
+        /// <summary>
+        /// User slots and user-read operation state. Parallels <see cref="Configuration"/>.
+        /// </summary>
+        public PanelUserListState UserList { get; } = new();
+
+        /// <summary>
+        /// Installer configuration data read via SectionRead.
+        /// Null until a config read is explicitly triggered by the user.
+        /// </summary>
+        public PanelConfigurationState? Configuration { get; set; }
+
+        /// <summary>
+        /// Whether the panel is currently in installer programming mode.
+        /// Tracked via ProgrammingLeadInOut notifications from the panel.
+        /// </summary>
+        public bool IsInProgrammingMode { get; set; }
+
+        /// <summary>
+        /// Whether the initial configuration pull (capabilities, labels, status)
+        /// has completed. User-initiated operations should wait for this.
+        /// </summary>
+        public bool IsInitialized { get; set; }
+
+        /// <summary>
+        /// Serializes panel configuration operations (reads and writes).
+        /// Prevents the initial handler pull and user-initiated operations from interleaving.
+        /// </summary>
+        public SemaphoreSlim ConfigLock { get; } = new(1, 1);
 
         /// <summary>
         /// When this session was established.

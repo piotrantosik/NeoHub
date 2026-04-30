@@ -1,0 +1,665 @@
+@page "/panel-config"
+@using NeoHub.Services
+@using NeoHub.Services.Models
+@using NeoHub.Services.Settings
+@using NeoHub.Services.PanelConfiguration
+@using NeoHub.Services.PanelConfiguration.Sections
+@using DSC.TLink.ITv2.MediatR
+@using Microsoft.Extensions.Options
+@inject IPanelStateService PanelState
+@inject IPanelConfigurationService ConfigService
+@inject IPanelConfigFileService ConfigFileService
+@inject IITv2SessionManager SessionManager
+@inject ISessionMonitor SessionMonitor
+@inject IJSRuntime JS
+@inject IOptionsMonitor<PanelConnectionsSettings> ConnectionSettings
+@inject IPanelAccessCodeService AccessCodes
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@inject ISnackbar Snackbar
+@implements IDisposable
+
+<PageTitle>Panel Configuration</PageTitle>
+
+<MudContainer MaxWidth="MaxWidth.ExtraLarge" Class="mt-4">
+
+    @if (_config is null)
+    {
+        @if (_isReading)
+        {
+            <MudStack AlignItems="AlignItems.Center" Class="mt-8">
+                <MudProgressCircular Indeterminate="true" Size="Size.Large" />
+                <MudText Typo="Typo.h6" Color="Color.Secondary">Reading panel configuration…</MudText>
+            </MudStack>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info" Class="mt-4">
+                Waiting for configuration data. The installer code dialog should have appeared automatically.
+            </MudAlert>
+        }
+    }
+    else
+    {
+        @* ── Header ── *@
+        <MudPaper Class="pa-3 mb-4">
+            <MudStack Row="true" Justify="Justify.SpaceBetween" AlignItems="AlignItems.Center">
+                <MudStack Row="true" Spacing="4" AlignItems="AlignItems.Center">
+                    <MudIcon Icon="@Icons.Material.Filled.Build" Size="Size.Large" />
+                    <div>
+                        <MudText Typo="Typo.h5">Panel Configuration</MudText>
+                        <MudText Typo="Typo.caption" Color="Color.Secondary">
+                            Session: @_sessionId
+                            @if (_config.LastReadAt is not null)
+                            {
+                                <text> · Read @_config.LastReadAt.Value.ToLocalTime().ToString("HH:mm:ss")</text>
+                            }
+                            · @_config.Capabilities.MaxZones zones · @_config.Capabilities.MaxPartitions partitions
+                        </MudText>
+                    </div>
+                </MudStack>
+                <MudStack Row="true" Spacing="2">
+                    <MudButton Variant="@(_isReading ? Variant.Filled : Variant.Outlined)"
+                               Color="@(_isReading ? Color.Info : Color.Default)"
+                               OnClick="ReadAllAsync"
+                               Disabled="@_isReading"
+                               Style="position: relative; overflow: hidden;">
+                        <PhaseIndicator IsAnimated="@_isReading"
+                                        Color="@(_isReading ? Color.Info : Color.Default)"
+                                        Icon="@Icons.Material.Filled.Download"
+                                        Label="@(_isReading ? "Reading…" : "Read Panel")" />
+                    </MudButton>
+                    <MudMenu Label="Save" StartIcon="@Icons.Material.Filled.Save"
+                             Variant="Variant.Outlined" AnchorOrigin="Origin.BottomRight">
+                        <MudMenuItem Icon="@Icons.Material.Filled.Computer"
+                                     OnClick="SaveToServerAsync">
+                            Save to Server
+                        </MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.FileDownload"
+                                     OnClick="DownloadToBrowserAsync">
+                            Export File
+                        </MudMenuItem>
+                    </MudMenu>
+                    <MudMenu Label="Load" StartIcon="@Icons.Material.Filled.FolderOpen"
+                             Variant="Variant.Outlined" AnchorOrigin="Origin.BottomRight">
+                        @{
+                            var savedFiles = ConfigFileService.GetSavedFiles();
+                        }
+                        @if (savedFiles.Any())
+                        {
+                            @foreach (var file in savedFiles)
+                            {
+                                var f = file;
+                                <MudMenuItem Icon="@Icons.Material.Filled.Description"
+                                             OnClick="@(() => LoadFromServerAsync(f))">
+                                    @f
+                                </MudMenuItem>
+                            }
+                            <MudDivider />
+                        }
+                        <MudMenuItem Icon="@Icons.Material.Filled.UploadFile">
+                            <MudFileUpload T="IBrowserFile" Accept=".json"
+                                           FilesChanged="UploadFromBrowserAsync"
+                                           Style="display:inline;">
+                                <ActivatorContent>
+                                    <MudText>Upload from Browser</MudText>
+                                </ActivatorContent>
+                            </MudFileUpload>
+                        </MudMenuItem>
+                    </MudMenu>
+                    <MudButton Variant="Variant.Outlined"
+                               StartIcon="@Icons.Material.Filled.Print"
+                               OnClick="PrintConfigAsync">
+                        Print
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        </MudPaper>
+
+        @* ── Tabs ── *@
+        <MudTabs Elevation="1" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+            @* ══ ZONES TAB ══ *@
+            <MudTabPanel Text="Zones" Icon="@Icons.Material.Filled.Sensors">
+                <div style="overflow-x: auto;">
+                    <MudSimpleTable Dense="true" Hover="true" FixedHeader="true" Style="max-height: 70vh;">
+                        <thead>
+                            <tr>
+                                <th style="width:50px;">#</th>
+                                <th style="min-width:80px;">Status</th>
+                                <th style="min-width:200px;">Label</th>
+                                <th style="min-width:150px;">Definition</th>
+                                <th>Attributes</th>
+                                <th style="min-width:80px;">Partitions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{
+                                var zoneLabels = _config.ZoneLabels.Values;
+                                var zoneValues = _config.ZoneDefinitions.Values;
+                                var zoneAttrs = _config.ZoneAttributes.Values;
+                                var zoneAlarmAttrs = _config.ZoneEventReporting.Values;
+                                var assignments = _config.ZoneAssignments.Values;
+                                int maxPartitions = _config.Capabilities.MaxPartitions;
+                                int maxZones = _config.Capabilities.MaxZones;
+                            }
+                            @for (int z = 0; z < maxZones; z++)
+                            {
+                                var zoneNum = z + 1;
+                                var def = z < zoneValues.Count ? zoneValues[z] : ZoneDefinition.NullZone;
+                                var label = z < zoneLabels.Count ? zoneLabels[z] : null;
+                                var attrs = z < zoneAttrs.Count ? zoneAttrs[z] : default;
+                                var alarmAttrs = z < zoneAlarmAttrs.Count ? zoneAlarmAttrs[z] : default;
+                                var isNull = def == ZoneDefinition.NullZone;
+                                var zoneState = _session?.Zones.GetValueOrDefault((byte)zoneNum);
+
+                                <tr style="@(isNull ? "opacity: 0.4;" : "") cursor: pointer;"
+                                    @onclick="@(() => EditZoneAsync(zoneNum))">
+                                    <td><strong>@zoneNum</strong></td>
+                                    <td>@GetZoneStatusChip(zoneState)</td>
+                                    <td style="font-family: 'Courier New', monospace; font-size: 0.85em;">
+                                        @if (!string.IsNullOrEmpty(label))
+                                        {
+                                            @FormatLabelLine1(label)<br />@FormatLabelLine2(label)
+                                        }
+                                    </td>
+                                    <td>@(isNull ? "—" : FormatEnumName(def.ToString()))</td>
+                                    <td>
+                                        @{
+                                            var allZero = (byte)attrs.Functional == 0 && (byte)attrs.Physical == 0 && (byte)alarmAttrs == 0;
+                                        }
+                                        <MudTooltip Placement="Placement.Left" Arrow="true">
+                                            <ChildContent>
+                                                <span style="font-family:monospace; font-size:0.8em; white-space:nowrap;@(allZero ? " opacity:0.3;" : "")">@($"{(byte)attrs.Functional:X2}·{(byte)attrs.Physical:X2}·{(byte)alarmAttrs:X2}")</span>
+                                            </ChildContent>
+                                            <TooltipContent>
+                                                @RenderAttributeTooltip(attrs, alarmAttrs)
+                                            </TooltipContent>
+                                        </MudTooltip>
+                                    </td>
+                                    <td>
+                                        <div style="display: flex; gap: 3px; align-items: center;">
+                                            @for (int p = 0; p < maxPartitions; p++)
+                                            {
+                                                var pIdx = p;
+                                                var zIdx = z;
+                                                var assigned = pIdx < assignments.GetLength(0) && zIdx < assignments.GetLength(1) && assignments[pIdx, zIdx];
+                                                <div style="width:18px; height:18px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+                                                            background:@(assigned ? "#4caf50" : "#9e9e9e"); opacity:@(assigned ? "1" : "0.15");
+                                                            font-size:10px; font-weight:bold; color:#fff; line-height:1;"
+                                                     title="@($"P{pIdx + 1}: {(assigned ? "Assigned" : "Not assigned")}")">@(pIdx + 1)</div>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+            </MudTabPanel>
+
+            @* ══ PARTITIONS TAB ══ *@
+            <MudTabPanel Text="Partitions" Icon="@Icons.Material.Filled.Shield">
+                <div style="overflow-x: auto;">
+                    <MudSimpleTable Dense="true" Hover="true" FixedHeader="true" Style="max-height: 70vh;">
+                        <thead>
+                            <tr>
+                                <th style="width:50px;">#</th>
+                                <th style="min-width:100px;">Status</th>
+                                <th style="min-width:200px;">Label</th>
+                                <th style="min-width:100px;">Config</th>
+                                <th style="min-width:100px;">Zones</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{
+                                var partLabels = _config.PartitionLabels.Values;
+                                var partEnables = _config.PartitionEnables.Values;
+                                var partAssignments = _config.ZoneAssignments.Items;
+                            }
+                            @for (int p = 0; p < partEnables.Count; p++)
+                            {
+                                var partNum = p + 1;
+                                var label = p < partLabels.Count ? partLabels[p] : null;
+                                var enabled = partEnables[p];
+                                var assignedZones = partAssignments.FirstOrDefault(a => a.Partition == partNum).Zones;
+                                var zoneCount = assignedZones?.Length ?? 0;
+                                var partState = _session?.Partitions.GetValueOrDefault((byte)partNum);
+
+                                <tr style="cursor: pointer;" @onclick="@(() => EditPartitionAsync(partNum))">
+                                    <td><strong>@partNum</strong></td>
+                                    <td>@GetPartitionStatusChip(partState, enabled)</td>
+                                    <td style="font-family: 'Courier New', monospace; font-size: 0.85em;">
+                                        @if (!string.IsNullOrEmpty(label))
+                                        {
+                                            @FormatLabelLine1(label)<br />@FormatLabelLine2(label)
+                                        }
+                                    </td>
+                                    <td>
+                                        <MudChip T="string" Size="Size.Small"
+                                                 Color="@(enabled == PartitionEnable.Enabled ? Color.Success : Color.Default)">
+                                            @enabled
+                                        </MudChip>
+                                    </td>
+                                    <td>@zoneCount zones</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                </div>
+            </MudTabPanel>
+
+            @* ══ SYSTEM TAB ══ *@
+            <MudTabPanel Text="System" Icon="@Icons.Material.Filled.SettingsApplications">
+                <MudAlert Severity="Severity.Info" Class="mt-2">
+                    No system-level parameters defined yet. Future firmware and system settings will appear here.
+                </MudAlert>
+            </MudTabPanel>
+        </MudTabs>
+    }
+</MudContainer>
+
+@code {
+    private List<string> _activeSessions = new();
+    private string? _sessionId;
+    private string? _installerCode;
+    private SessionState? _session;
+    private PanelConfigurationState? _config;
+    private bool _isReading;
+    private bool _disposed;
+    private bool _promptShown;
+
+    protected override void OnInitialized()
+    {
+        RefreshSessions();
+        SessionMonitor.SessionsChanged += OnSessionsChanged;
+        PanelState.SessionStateChanged += OnStateChanged;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && !_promptShown)
+        {
+            _promptShown = true;
+
+            if (_sessionId is null)
+            {
+                Snackbar.Add("No active panel session", Severity.Warning);
+                Navigation.NavigateTo("/connections");
+                return;
+            }
+
+            _session = PanelState.GetSession(_sessionId);
+            _config = _session?.Configuration;
+
+            if (_config is not null)
+            {
+                // Config loaded at startup — capture the installer code for writes
+                _installerCode = AccessCodes.GetConnectionCode(_sessionId, PanelAccessCodeKind.Installer);
+                StateHasChanged();
+                return;
+            }
+
+            // Need to read config — auto-prompt for installer code if needed
+            await ReadAllAsync();
+        }
+    }
+
+    private void RefreshSessions()
+    {
+        _activeSessions = SessionManager.GetActiveSessions().ToList();
+        if (_sessionId is null || !_activeSessions.Contains(_sessionId))
+            _sessionId = _activeSessions.FirstOrDefault();
+    }
+
+    private void OnSessionsChanged()
+    {
+        InvokeAsync(() =>
+        {
+            if (_disposed) return;
+            try { RefreshSessions(); StateHasChanged(); }
+            catch (ObjectDisposedException) { }
+        });
+    }
+
+    private void OnStateChanged(object? sender, EventArgs e)
+    {
+        InvokeAsync(() =>
+        {
+            if (_disposed) return;
+            try
+            {
+                _session = _sessionId is not null ? PanelState.GetSession(_sessionId) : null;
+                _config = _session?.Configuration;
+                StateHasChanged();
+            }
+            catch (ObjectDisposedException) { }
+        });
+    }
+
+    private async Task ReadAllAsync()
+    {
+        if (_sessionId is null) return;
+
+        var session = PanelState.GetSession(_sessionId);
+        var code = AccessCodes.GetConnectionCode(_sessionId, PanelAccessCodeKind.Installer);
+
+        if (string.IsNullOrEmpty(code))
+        {
+            code = await PromptForInstallerCodeAsync();
+            if (string.IsNullOrEmpty(code))
+            {
+                Navigation.NavigateTo("/");
+                return;
+            }
+        }
+
+        _installerCode = code;
+        _isReading = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await ConfigService.ReadAllAsync(_sessionId, code!, CancellationToken.None);
+            if (result.Success)
+            {
+                _session = PanelState.GetSession(_sessionId);
+                _config = _session?.Configuration;
+                Snackbar.Add("Configuration loaded", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"Failed to read configuration: {result.ErrorMessage}", Severity.Error);
+                Navigation.NavigateTo("/");
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Error: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _isReading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task<string?> PromptForInstallerCodeAsync()
+    {
+        if (_sessionId is null) return null;
+
+        // Delegates to the shared access code service: cache → connection settings → prompt with
+        // panel-side verification. Same path the Users page uses for master codes.
+        return await DialogService.ResolveAccessCodeAsync(
+            AccessCodes, _sessionId, PanelAccessCodeKind.Installer);
+    }
+
+    private async Task EditZoneAsync(int zoneNumber)
+    {
+        if (_config is null || _sessionId is null || _installerCode is null) return;
+
+        var zoneState = _session?.Zones.GetValueOrDefault((byte)zoneNumber);
+        var statusText = zoneState is not null ? $" — {GetZoneStatusText(zoneState)}" : "";
+
+        var parameters = new DialogParameters<ZoneEditDialog>
+        {
+            { x => x.ZoneNumber, zoneNumber },
+            { x => x.Config, _config },
+            { x => x.SessionId, _sessionId },
+            { x => x.InstallerCode, _installerCode }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true };
+        var dialog = await DialogService.ShowAsync<ZoneEditDialog>($"Zone {zoneNumber}{statusText}", parameters, options);
+        var result = await dialog.Result;
+        if (result?.Canceled == false)
+        {
+            _session = PanelState.GetSession(_sessionId);
+            _config = _session?.Configuration;
+            StateHasChanged();
+        }
+    }
+
+    private async Task EditPartitionAsync(int partitionNumber)
+    {
+        if (_config is null || _sessionId is null || _installerCode is null) return;
+
+        var partState = _session?.Partitions.GetValueOrDefault((byte)partitionNumber);
+        var statusText = partState is not null ? $" — {FormatEnumName(partState.EffectiveStatus.ToString())}" : "";
+
+        var parameters = new DialogParameters<PartitionEditDialog>
+        {
+            { x => x.PartitionNumber, partitionNumber },
+            { x => x.Config, _config },
+            { x => x.SessionId, _sessionId },
+            { x => x.InstallerCode, _installerCode }
+        };
+        var options = new DialogOptions { MaxWidth = MaxWidth.Small, FullWidth = true, CloseButton = true };
+        var dialog = await DialogService.ShowAsync<PartitionEditDialog>($"Partition {partitionNumber}{statusText}", parameters, options);
+        var result = await dialog.Result;
+        if (result?.Canceled == false)
+        {
+            _session = PanelState.GetSession(_sessionId);
+            _config = _session?.Configuration;
+            StateHasChanged();
+        }
+    }
+
+    private static string FormatLabelLine1(string label) =>
+        label.Length >= 14 ? label[..14].TrimEnd() : label.TrimEnd();
+
+    private static string FormatLabelLine2(string label) =>
+        label.Length > 14 ? label[14..Math.Min(28, label.Length)].TrimEnd() : "";
+
+    private static string FormatEnumName(string name) =>
+        System.Text.RegularExpressions.Regex.Replace(name, @"(\p{Ll})(\p{Lu})", "$1 $2")
+            .Replace("24 Hour", "24-Hour");
+
+    private static string GetZoneStatusText(ZoneState? zone)
+    {
+        if (zone is null) return "Unknown";
+        if (zone.IsTampered) return "Tampered";
+        if (zone.IsFaulted) return "Faulted";
+        if (zone.IsBypassed) return "Bypassed";
+        return zone.IsOpen ? "Open" : "Closed";
+    }
+
+    private static RenderFragment GetZoneStatusChip(ZoneState? zone) => __builder =>
+    {
+        if (zone is null) return;
+        var text = GetZoneStatusText(zone);
+        var color = zone switch
+        {
+            { IsTampered: true } => Color.Error,
+            { IsFaulted: true } => Color.Error,
+            { IsBypassed: true } => Color.Warning,
+            { IsOpen: true } => Color.Info,
+            _ => Color.Success
+        };
+        <MudChip T="string" Size="Size.Small" Color="@color"
+                 Variant="@(zone.IsOpen || zone.IsFaulted || zone.IsTampered ? Variant.Filled : Variant.Outlined)">@text</MudChip>;
+    };
+
+    private static RenderFragment GetPartitionStatusChip(PartitionState? part, PartitionEnable enabled) => __builder =>
+    {
+        if (enabled != PartitionEnable.Enabled) { <MudChip T="string" Size="Size.Small" Color="Color.Default">Disabled</MudChip>; return; }
+        if (part is null) { <MudChip T="string" Size="Size.Small" Color="Color.Default">Unknown</MudChip>; return; }
+        var status = part.EffectiveStatus;
+        var color = status switch
+        {
+            PartitionStatus.Disarmed => Color.Success,
+            PartitionStatus.ArmedAway => Color.Error,
+            PartitionStatus.ArmedHome => Color.Warning,
+            PartitionStatus.ArmedNight => Color.Dark,
+            PartitionStatus.Arming => Color.Warning,
+            PartitionStatus.Triggered => Color.Error,
+            PartitionStatus.Pending => Color.Warning,
+            _ => Color.Default
+        };
+        <MudChip T="string" Size="Size.Small" Color="@color">@FormatEnumName(status.ToString())</MudChip>;
+    };
+
+    private static RenderFragment RenderAttributeTooltip(ZoneAttributes attrs, ZoneEventReportingAttributes evtRpt) => __builder =>
+    {
+        <div style="font-size:0.85em; line-height:1.6;">
+            <div style="font-weight:600; margin-bottom:2px;">Functional [@($"{(byte)attrs.Functional:X2}")]</div>
+            @foreach (var f in Enum.GetValues<ZoneFunctionalAttributes>())
+            {
+                if (f == 0 || ((byte)f & ((byte)f - 1)) != 0) continue;
+                var on = attrs.Functional.HasFlag(f);
+                <div style="padding-left:10px;@(on ? "" : " opacity:0.3;")">@FormatEnumName(f.ToString()).Replace("Is ", "")</div>
+            }
+            <div style="font-weight:600; margin-top:6px; margin-bottom:2px;">Physical [@($"{(byte)attrs.Physical:X2}")]</div>
+            @foreach (var f in Enum.GetValues<ZonePhysicalAttributes>())
+            {
+                if (f == 0 || ((byte)f & ((byte)f - 1)) != 0) continue;
+                var on = attrs.Physical.HasFlag(f);
+                <div style="padding-left:10px;@(on ? "" : " opacity:0.3;")">@FormatEnumName(f.ToString()).Replace("Is ", "")</div>
+            }
+            <div style="font-weight:600; margin-top:6px; margin-bottom:2px;">Event Reporting [@($"{(byte)evtRpt:X2}")]</div>
+            @foreach (var f in Enum.GetValues<ZoneEventReportingAttributes>())
+            {
+                if (f == 0 || ((byte)f & ((byte)f - 1)) != 0) continue;
+                var on = evtRpt.HasFlag(f);
+                <div style="padding-left:10px;@(on ? "" : " opacity:0.3;")">@FormatEnumName(f.ToString())</div>
+            }
+        </div>
+    };
+
+    public void Dispose()
+    {
+        _disposed = true;
+        SessionMonitor.SessionsChanged -= OnSessionsChanged;
+        PanelState.SessionStateChanged -= OnStateChanged;
+    }
+
+    private async Task SaveToServerAsync()
+    {
+        if (_config is null) return;
+
+        try
+        {
+            var fileName = $"panel-config-{_sessionId}-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await ConfigFileService.SaveToServerAsync(_config, fileName);
+            Snackbar.Add($"Saved to server: {fileName}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Save failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DownloadToBrowserAsync()
+    {
+        if (_config is null) return;
+
+        try
+        {
+            var bytes = ConfigFileService.ExportToBytes(_config);
+            var base64 = Convert.ToBase64String(bytes);
+            var fileName = $"panel-config-{_sessionId}-{DateTime.Now:yyyyMMdd-HHmmss}.json";
+            await JS.InvokeVoidAsync("downloadFile", fileName, base64, "application/json");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Download failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task PrintConfigAsync()
+    {
+        if (_config is null) return;
+
+        try
+        {
+            var html = ConfigFileService.GeneratePrintHtml(_config, _sessionId);
+            await JS.InvokeVoidAsync("printHtml", html);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Print failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadFromServerAsync(string fileName)
+    {
+        try
+        {
+            var incoming = await ConfigFileService.LoadFromServerAsync(fileName);
+            await ShowDiffDialogAsync(incoming, fileName);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Load failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task UploadFromBrowserAsync(IBrowserFile? file)
+    {
+        if (file is null) return;
+
+        try
+        {
+            using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            using var ms = new MemoryStream();
+            await stream.CopyToAsync(ms);
+
+            var incoming = ConfigFileService.ImportFromBytes(ms.ToArray());
+            await ShowDiffDialogAsync(incoming, file.Name);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"Import failed: {ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ShowDiffDialogAsync(PanelConfigurationState incoming, string sourceName)
+    {
+        if (_config is null || _sessionId is null)
+        {
+            // No current config to diff against — just apply directly
+            if (_sessionId is not null)
+                PanelState.UpdateSession(_sessionId, s => s.Configuration = incoming);
+            _session = _sessionId is not null ? PanelState.GetSession(_sessionId) : null;
+            _config = _session?.Configuration;
+            Snackbar.Add($"Loaded: {sourceName}", Severity.Success);
+            StateHasChanged();
+            return;
+        }
+
+        var diffs = ConfigFileService.Compare(_config, incoming);
+
+        var parameters = new DialogParameters<ConfigDiffDialog>
+        {
+            { x => x.Diffs, diffs },
+            { x => x.CurrentConfig, _config },
+            { x => x.IncomingConfig, incoming },
+            { x => x.SessionId, _sessionId },
+            { x => x.InstallerCode, _installerCode ?? "" }
+        };
+
+        var options = new DialogOptions
+        {
+            MaxWidth = MaxWidth.Medium,
+            FullWidth = true,
+            CloseButton = true
+        };
+
+        var dialog = await DialogService.ShowAsync<ConfigDiffDialog>(
+            $"Configuration Diff — {sourceName}", parameters, options);
+        var result = await dialog.Result;
+
+        if (result?.Canceled != false) return;
+
+        // result.Data is true if changes were written, false if preview-only
+        var wasWritten = result.Data is true;
+
+        if (!wasWritten)
+        {
+            // Preview only — swap in-memory config without writing to panel
+            PanelState.UpdateSession(_sessionId, s => s.Configuration = incoming);
+        }
+
+        _session = PanelState.GetSession(_sessionId);
+        _config = _session?.Configuration;
+        StateHasChanged();
+    }
+}

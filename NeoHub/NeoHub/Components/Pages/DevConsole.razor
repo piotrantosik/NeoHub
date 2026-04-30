@@ -187,6 +187,9 @@
     private readonly List<DiagnosticsLogEntry> _rawLogEntries = new(300);
     private bool _tlinkOnly = true;
     private bool _autoScroll = true;
+    private bool _disposed;
+    private bool _renderDirty;
+    private Timer? _renderTimer;
 
     private static readonly IReadOnlyList<MessageTypeInfo> _catalog = MessageCatalog.GetSendable();
 
@@ -198,12 +201,32 @@
 
         foreach (var entry in LogService.GetLogs().TakeLast(200))
             _rawLogEntries.Add(entry);
+
+        // Periodic render for external event updates (log entries, session changes).
+        // Coalesces rapid-fire events into a single StateHasChanged() call and avoids
+        // calling StateHasChanged() directly from event callbacks, which races with
+        // circuit teardown on browser refresh.
+        _renderTimer = new Timer(_ => InvokeAsync(() =>
+        {
+            if (_disposed || !_renderDirty) return;
+            try
+            {
+                _renderDirty = false;
+                StateHasChanged();
+            }
+            catch (ObjectDisposedException) { }
+        }), null, 200, 200);
     }
 
-    protected override async Task OnAfterRenderAsync(bool firstRender)
+    protected override Task OnAfterRenderAsync(bool firstRender)
     {
+        // Fire-and-forget: awaiting JS interop here releases the sync context,
+        // which allows queued InvokeAsync callbacks (from OnLogReceived / timer)
+        // to run and call StateHasChanged() mid-render — causing a re-entrant
+        // render that crashes the diff builder with NullReferenceException.
         if (_autoScroll)
-            await JS.InvokeVoidAsync("scrollToBottom", "dev-log-container");
+            _ = JS.InvokeVoidAsync("scrollToBottom", "dev-log-container");
+        return Task.CompletedTask;
     }
 
     private void RefreshSessions()
@@ -217,8 +240,13 @@
     {
         InvokeAsync(() =>
         {
-            RefreshSessions();
-            StateHasChanged();
+            if (_disposed) return;
+            try
+            {
+                RefreshSessions();
+                _renderDirty = true;
+            }
+            catch (ObjectDisposedException) { }
         });
     }
 
@@ -226,10 +254,15 @@
     {
         InvokeAsync(() =>
         {
-            _rawLogEntries.Add(entry);
-            if (_rawLogEntries.Count > 300)
-                _rawLogEntries.RemoveAt(0);
-            StateHasChanged();
+            if (_disposed) return;
+            try
+            {
+                _rawLogEntries.Add(entry);
+                if (_rawLogEntries.Count > 300)
+                    _rawLogEntries.RemoveAt(0);
+                _renderDirty = true;
+            }
+            catch (ObjectDisposedException) { }
         });
     }
 
@@ -266,22 +299,61 @@
         _buildError = null;
         _response = null;
 
+        if (info is null) return;
+
+        // Instantiate the message so the form starts with the actual default
+        // property values (e.g. Partition = 1) instead of type-based guesses.
+        object? defaults = null;
+        try { defaults = Activator.CreateInstance(info.MessageType); }
+        catch { /* fall through to type-based defaults */ }
+
         foreach (var prop in _editableProperties)
         {
+            var defaultValue = defaults is not null ? prop.GetValue(defaults) : null;
+
             if (prop.PropertyType == typeof(bool))
-                _boolValues[prop.Name] = false;
+                _boolValues[prop.Name] = defaultValue is bool b && b;
             else
-                _stringValues[prop.Name] = GetDefaultStringValue(prop);
+                _stringValues[prop.Name] = FormatDefaultValue(prop, defaultValue);
         }
     }
 
-    private static string GetDefaultStringValue(PropertyInfo prop)
+    /// <summary>
+    /// Formats a property's actual default value for display in the text field.
+    /// Nullable types show blank when null; non-nullable value types always show
+    /// their default so the field is never left empty.
+    /// </summary>
+    private static string FormatDefaultValue(PropertyInfo prop, object? defaultValue)
     {
-        if (prop.PropertyType.IsEnum)
-            return Enum.GetNames(prop.PropertyType).FirstOrDefault() ?? string.Empty;
-        if (prop.PropertyType == typeof(string) || prop.PropertyType == typeof(byte[]))
+        var type = prop.PropertyType;
+
+        if (Nullable.GetUnderlyingType(type) is not null)
+            return defaultValue?.ToString() ?? string.Empty;
+
+        if (type.IsEnum)
+            return defaultValue?.ToString()
+                ?? Enum.GetNames(type).FirstOrDefault()
+                ?? string.Empty;
+
+        if (type == typeof(string))
+            return defaultValue as string ?? string.Empty;
+
+        if (type == typeof(byte[]))
+        {
+            if (defaultValue is byte[] { Length: > 0 } bytes)
+                return string.Join(" ", bytes.Select(b => b.ToString("X2")));
             return string.Empty;
-        return "0";
+        }
+
+        if (IsValueTypeArray(type))
+        {
+            if (defaultValue is Array { Length: > 0 } arr)
+                return string.Join(", ", arr.Cast<object>());
+            return string.Empty;
+        }
+
+        // Non-nullable value types (int, byte, etc.) — always show the default
+        return defaultValue?.ToString() ?? "0";
     }
 
     // Build a RenderFragment per property to keep the foreach loop body clean.
@@ -331,9 +403,15 @@
         }
         else
         {
-            var helperText = prop.PropertyType == typeof(byte[]) ? "Space-separated hex bytes" : null;
-            var placeholder = prop.PropertyType == typeof(byte[]) ? "01 FF 3A" : null;
-            var label = prop.PropertyType == typeof(byte[]) || prop.PropertyType == typeof(string)
+            var isHexArray = prop.PropertyType == typeof(byte[]);
+            var isValueArray = IsValueTypeArray(prop.PropertyType);
+            var helperText = isHexArray ? "Space-separated hex bytes"
+                : isValueArray ? "Comma-separated values"
+                : null;
+            var placeholder = isHexArray ? "01 FF 3A"
+                : isValueArray ? "1, 2, 3"
+                : null;
+            var label = isHexArray || isValueArray || prop.PropertyType == typeof(string)
                 ? name
                 : $"{name} ({GetTypeLabel(prop.PropertyType)})";
 
@@ -427,6 +505,7 @@
         if (underlying is not null && string.IsNullOrWhiteSpace(str)) return null;
         if (targetType == typeof(string)) return str;
         if (targetType == typeof(byte[])) return ParseHex(str);
+        if (IsValueTypeArray(type)) return ParseValueArray(type.GetElementType()!, str);
         if (targetType.IsEnum) return Enum.Parse(targetType, str);
         if (string.IsNullOrWhiteSpace(str)) return Activator.CreateInstance(targetType);
 
@@ -459,6 +538,18 @@
             .ToArray();
     }
 
+    private static Array ParseValueArray(Type elementType, string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return Array.CreateInstance(elementType, 0);
+
+        var tokens = input.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
+        var arr = Array.CreateInstance(elementType, tokens.Length);
+        for (int i = 0; i < tokens.Length; i++)
+            arr.SetValue(Convert.ChangeType(tokens[i].Trim(), elementType), i);
+        return arr;
+    }
+
     private void ResetForm() => OnMessageTypeSelected(_selectedType);
 
     private void ClearLog() => _rawLogEntries.Clear();
@@ -477,7 +568,10 @@
     }
 
     private static bool IsComplexType(Type t) =>
-        t.IsClass && t != typeof(string) && t != typeof(byte[]);
+        t.IsClass && t != typeof(string) && t != typeof(byte[]) && !IsValueTypeArray(t);
+
+    private static bool IsValueTypeArray(Type t) =>
+        t.IsArray && t != typeof(byte[]) && t.GetElementType()!.IsValueType;
 
     private static string GetTypeLabel(Type t) => Type.GetTypeCode(t) switch
     {
@@ -508,6 +602,8 @@
 
     public void Dispose()
     {
+        _disposed = true;
+        _renderTimer?.Dispose();
         SessionMonitor.SessionsChanged -= OnSessionsChanged;
         LogService.LogReceived -= OnLogReceived;
     }

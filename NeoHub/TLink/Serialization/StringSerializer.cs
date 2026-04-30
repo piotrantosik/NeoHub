@@ -81,7 +81,7 @@ namespace DSC.TLink.Serialization
 
         internal static void WriteUnicodeString(List<byte> bytes, string propertyName, string? str, int lengthBytes)
         {
-            var encoded = Encoding.Unicode.GetBytes(str ?? string.Empty);
+            var encoded = Encoding.BigEndianUnicode.GetBytes(str ?? string.Empty);
 
             switch (lengthBytes)
             {
@@ -120,7 +120,7 @@ namespace DSC.TLink.Serialization
                 throw new InvalidOperationException(
                     $"Not enough bytes to read Unicode string '{propertyName}' (need {length}, have {bytes.Length - offset})");
 
-            var str = Encoding.Unicode.GetString(bytes.Slice(offset, length));
+            var str = Encoding.BigEndianUnicode.GetString(bytes.Slice(offset, length));
             offset += length;
             return str;
         }
@@ -132,11 +132,24 @@ namespace DSC.TLink.Serialization
 
             for (int i = 0; i < fixedLength; i++)
             {
-                byte highNibble = (byte)(padded[i * 2] - '0');
-                byte lowNibble = (byte)(padded[i * 2 + 1] - '0');
+                byte highNibble = ParseHexNibble(padded[i * 2]);
+                byte lowNibble = ParseHexNibble(padded[i * 2 + 1]);
                 bytes.Add((byte)((highNibble << 4) | lowNibble));
             }
         }
+
+        /// <summary>
+        /// Parses a single hex nibble character (0-9, A-F, a-f).
+        /// Panels use hex sentinels like "AAAA" (disabled access code) that must round-trip
+        /// through BCD fields, so we accept the full hex alphabet, not just decimal digits.
+        /// </summary>
+        private static byte ParseHexNibble(char c) => c switch
+        {
+            >= '0' and <= '9' => (byte)(c - '0'),
+            >= 'A' and <= 'F' => (byte)(c - 'A' + 10),
+            >= 'a' and <= 'f' => (byte)(c - 'a' + 10),
+            _ => throw new InvalidOperationException($"Invalid BCD/hex digit character '{c}' (0x{(int)c:X})")
+        };
 
         internal static void WriteBCDStringUnbounded(List<byte> bytes, string? str)
         {
@@ -163,6 +176,42 @@ namespace DSC.TLink.Serialization
             WriteBCDStringFixed(bytes, digits, bcdLength);
         }
 
+        internal static void WriteBCDStringArrayPrefixed(List<byte> bytes, string propertyName, string[]? strings)
+        {
+            strings ??= Array.Empty<string>();
+            if (strings.Length == 0)
+            {
+                bytes.Add(0);
+                return;
+            }
+
+            int maxDigits = strings.Max(s => (s ?? string.Empty).Length);
+            int bcdLength = (maxDigits + 1) / 2;
+            if (bcdLength > 255)
+                throw new InvalidOperationException(
+                    $"Property '{propertyName}' BCD element byte count {bcdLength} exceeds 1-byte prefix max (255).");
+
+            bytes.Add((byte)bcdLength);
+            foreach (var s in strings)
+                WriteBCDStringFixed(bytes, s, bcdLength);
+        }
+
+        internal static string[] ReadBCDStringArray(ReadOnlySpan<byte> bytes, ref int offset, string propertyName)
+        {
+            if (offset >= bytes.Length)
+                throw new InvalidOperationException(
+                    $"Not enough bytes to read BCD array length prefix for '{propertyName}'");
+
+            int bcdLen = bytes[offset++];
+            if (bcdLen == 0)
+                return Array.Empty<string>();
+
+            var list = new List<string>();
+            while (offset + bcdLen <= bytes.Length)
+                list.Add(ReadBCDString(bytes, ref offset, propertyName, bcdLen));
+            return list.ToArray();
+        }
+
         internal static string ReadBCDString(ReadOnlySpan<byte> bytes, ref int offset, string propertyName, int fixedLength)
         {
             if (offset + fixedLength > bytes.Length)
@@ -173,11 +222,11 @@ namespace DSC.TLink.Serialization
             for (int i = 0; i < fixedLength; i++)
             {
                 byte b = bytes[offset++];
-                sb.Append((b >> 4) & 0x0F);
-                sb.Append(b & 0x0F);
+                sb.Append($"{(b >> 4) & 0x0F:X}");
+                sb.Append($"{b & 0x0F:X}");
             }
 
-            return sb.ToString().TrimEnd('0');
+            return sb.ToString();
         }
 
         private static int ReadLengthPrefix1(ReadOnlySpan<byte> bytes, ref int offset, string propertyName)

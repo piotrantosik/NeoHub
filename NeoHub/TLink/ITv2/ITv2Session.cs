@@ -163,7 +163,7 @@ internal sealed class ITv2Session : IITv2Session
 
         SessionId = System.Text.Encoding.UTF8.GetString(_transport.DefaultHeader.Span);
         _sessionScope = _logger.BeginScope(ITv2ConnectionHandler.CreateLogScope(SessionId));
-        _logger.LogInformation("Connection from Integration Identification Number [851][422]");
+        _logger.LogInformation("Connection from Integration Identification Number {SessionId}", SessionId);
         OpenSession openSession = initialPacket.Message.As<OpenSession>();
 
         // Resolve per-connection settings now that we know the session ID and encryption type
@@ -272,6 +272,13 @@ internal sealed class ITv2Session : IITv2Session
                     await SendSimpleAckAsync(packet.SenderSequence, ct);
                 }
 
+                if (packet.Message is ConnectionEndSession)
+                {
+                    _logger.LogInformation("Received END_SESSION from panel, shutting down");
+                    _shutdownCts.Cancel();
+                    break;
+                }
+
                 if (_pendingReceivers.Any(receiver => receiver.TryReceive(packet)))
                 {
                     CleanupCompletedReceivers();
@@ -377,7 +384,7 @@ internal sealed class ITv2Session : IITv2Session
             {
                 var cmdSeq = GetNextCommandSequence();
                 cmd.CommandSequence = cmdSeq;
-                receiver = MessageReceiver.CreateCommandReceiver(senderSeq, cmdSeq);
+                receiver = MessageReceiver.CreateCommandReceiver(senderSeq, cmdSeq, cmd.Command);
             }
             else
             {
@@ -483,9 +490,13 @@ internal sealed class ITv2Session : IITv2Session
         }
         catch (Exception ex)
         {
+            var detail = ex is TypeInitializationException { InnerException: { } inner }
+                ? $"{ex.Message} → {inner.Message}"
+                : ex.Message;
+
             return Result<ITv2Packet>.Fail(
                 TLinkErrorCode.PacketParseError,
-                $"Failed to parse ITv2 packet: {ex.Message}");
+                $"Failed to parse ITv2 packet: {detail}");
         }
     }
 
@@ -544,6 +555,22 @@ internal sealed class ITv2Session : IITv2Session
 
     public async ValueTask DisposeAsync()
     {
+        if (_sessionReady.Task.IsCompletedSuccessfully)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+                var senderSeq = GetNextLocalSequence();
+                var packet = new ITv2Packet(senderSeq, _remoteSequence, new ConnectionEndSession());
+                await SendPacketAsync(packet, cts.Token);
+                _logger.LogInformation("END_SESSION sent");
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to send END_SESSION (transport may already be closed)");
+            }
+        }
+
         _shutdownCts.Cancel();
 
         _readyTimer?.Dispose();

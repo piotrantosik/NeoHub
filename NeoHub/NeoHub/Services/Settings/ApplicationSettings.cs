@@ -13,17 +13,6 @@ namespace NeoHub.Services.Settings
         public const string SectionName = "Application";
 
         /// <summary>
-        /// Default access code for one-touch arm/disarm operations (optional).
-        /// If set, allows arming and disarming without entering a code each time.
-        /// </summary>
-        [Display(
-            Name = "Default Access Code",
-            Description = "Optional access code for one-touch arm/disarm (leave empty to require code entry)",
-            GroupName = "Panel Control",
-            Order = 1)]
-        public string? DefaultAccessCode { get; set; }
-
-        /// <summary>
         /// TCP port for panel connections (default: 3072)
         /// </summary>
         [Display(

@@ -115,6 +115,10 @@ namespace DSC.TLink.Serialization
                         StringSerializer.WriteBCDStringPrefixed(bytes, pp.Property.Name, (string?)pp.Property.GetValue(instance));
                         break;
 
+                    case SerializerKind.LeadingLengthBCDStringArray:
+                        StringSerializer.WriteBCDStringArrayPrefixed(bytes, pp.Property.Name, (string[]?)pp.Property.GetValue(instance));
+                        break;
+
                     case SerializerKind.ByteArrayFixed:
                         ByteArraySerializer.WriteFixedArray(bytes, (byte[]?)pp.Property.GetValue(instance), pp.FixedLength);
                         break;
@@ -220,6 +224,10 @@ namespace DSC.TLink.Serialization
                         break;
                     }
 
+                    case SerializerKind.LeadingLengthBCDStringArray:
+                        pp.Property.SetValue(instance, StringSerializer.ReadBCDStringArray(bytes, ref offset, pp.Property.Name));
+                        break;
+
                     case SerializerKind.ByteArrayFixed:
                         pp.Property.SetValue(instance, ByteArraySerializer.ReadFixedArray(bytes, ref offset, pp.Property.Name, pp.FixedLength));
                         break;
@@ -303,9 +311,23 @@ namespace DSC.TLink.Serialization
 
         private static TypePlan BuildPlan(Type type)
         {
-            var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(p => p.CanRead && p.CanWrite && !p.IsDefined(typeof(IgnorePropertyAttribute), false))
-                .OrderBy(p => p.MetadataToken)
+            int GetInheritanceDepth(Type? t)
+            {
+                int depth = 0;
+                while (t != null)
+                {
+                    depth++;
+                    t = t.BaseType;
+                }
+                return depth;
+            }
+
+            var properties = type.GetProperties(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+                .Where(p => p.CanRead && p.CanWrite
+                    && !p.IsDefined(typeof(IgnorePropertyAttribute), false)
+                    && (p.GetMethod!.IsPublic || p.GetMethod.IsAssembly))
+                .OrderBy(p => GetInheritanceDepth(p.DeclaringType))
+                .ThenBy(p => p.MetadataToken)
                 .ToArray();
 
             // Identify bit field groups
@@ -475,6 +497,15 @@ namespace DSC.TLink.Serialization
 
                 if (elementType == typeof(string))
                 {
+                    if (property.IsDefined(typeof(LeadingLengthBCDStringAttribute), false))
+                    {
+                        return new PropertyPlan
+                        {
+                            Property = property,
+                            Kind = SerializerKind.LeadingLengthBCDStringArray,
+                        };
+                    }
+
                     if (property.IsDefined(typeof(FixedLengthUnicodeStringArrayAttribute), false))
                     {
                         return new PropertyPlan
